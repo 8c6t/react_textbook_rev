@@ -7,17 +7,19 @@ import fs from 'fs';
 import {applyMiddleware, createStore} from "redux";
 import {Provider} from "react-redux";
 import thunk from 'redux-thunk';
-import rootReducer from "./modules";
-import PreloadContext from "./lib/PreloadContext";
+import createSagaMiddleware from 'redux-saga';
+import rootReducer, { rootSaga } from './modules';
+import PreloadContext from './lib/PreloadContext';
+import { END } from 'redux-saga';
 
 import App from './App';
 
 const manifest = JSON.parse(
-  fs.readFileSync(path.resolve('./build/asset-manifest.json'), 'utf-8')
+  fs.readFileSync(path.resolve('./build/asset-manifest.json'), 'utf8')
 );
 
 const chunks = Object.keys(manifest.files)
-  .filter(key => /\.chunk\.js$/.exec(key))
+  .filter(key => /chunk\.js$/.exec(key))
   .map(key => `<script src="${manifest.files[key]}"></script>`)
   .join('');
 
@@ -34,7 +36,7 @@ function createPage(root, stateScript) {
   />
   <meta name="theme-color" content="#000000" />
   <title>React App</title>
-  <link rel="stylesheet" href="${manifest.files['main.css']}" />
+  <link href="${manifest.files['main.css']}" rel="stylesheet" />
 </head>
 <body>
   <noscript>You need to enable JavaScript to run this app</noscript>
@@ -42,7 +44,7 @@ function createPage(root, stateScript) {
     ${root}
   </div>
   ${stateScript}
-  <script src="${manifest.files['runtime~main.js']}"></script>
+  <script src="${manifest.files['runtime-main.js']}"></script>
   ${chunks}
   <script src="${manifest.files['main.js']}"></script>
 </body>
@@ -54,7 +56,14 @@ const app = express();
 
 const serverRender = async (req, res, next) => {
   const context = {};
-  const store = createStore(rootReducer, applyMiddleware(thunk));
+  const sagaMiddleware = createSagaMiddleware();
+
+  const store = createStore(
+    rootReducer,
+    applyMiddleware(thunk, sagaMiddleware)
+  );
+
+  const sagaPromise = sagaMiddleware.run(rootSaga).toPromise();
 
   const preloadContext = {
     done: false,
@@ -65,14 +74,17 @@ const serverRender = async (req, res, next) => {
     <PreloadContext.Provider value={preloadContext}>
       <Provider store={store}>
         <StaticRouter location={req.url} context={context}>
-          <App/>
+          <App />
         </StaticRouter>
       </Provider>
     </PreloadContext.Provider>
   );
 
   ReactDOMServer.renderToStaticMarkup(jsx);
+  store.dispatch(END);
+
   try {
+    await sagaPromise;
     await Promise.all(preloadContext.promises);
   } catch (e) {
     return res.status(500);
